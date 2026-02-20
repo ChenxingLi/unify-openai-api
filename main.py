@@ -8,37 +8,29 @@ logging.basicConfig(
         # ]
     )
 
-
-import unify_openai_api.backends.deerapi
-import unify_openai_api.backends.volcengine
-import unify_openai_api.backends.aliyun
-import os
-import json
 import logging
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import StreamingResponse
-from openai import AsyncOpenAI
-from openai._exceptions import OpenAIError
 from contextlib import asynccontextmanager
 
-from unify_openai_api.openai_utils import split_openai_params
-from unify_openai_api.backends import ChatCompletion
+from unify_openai_api.types.llm_api import LLMApi, AppState, get_typed_state
 from unify_openai_api.usage_db.writer import AsyncDBWriter
 
+import unify_openai_api.providers.aliyun
+import unify_openai_api.providers.volcengine
+import unify_openai_api.providers.deerapi
 
 logger = logging.getLogger(__name__)
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # ✅ 这里是原 startup 函数的内容
-    models: dict[str, ChatCompletion] = dict()
+    models: dict[str, LLMApi] = dict()
     writer = AsyncDBWriter()
     writer.start()
 
-    unify_openai_api.backends.aliyun.regiester_models(models)
-    unify_openai_api.backends.volcengine.regiester_models(models)
-    unify_openai_api.backends.deerapi.regiester_models(models)
+    unify_openai_api.providers.aliyun.regiester_models(models)
+    unify_openai_api.providers.volcengine.regiester_models(models)
+    unify_openai_api.providers.deerapi.regiester_models(models)
 
     app.state.models = models
     app.state.writer = writer
@@ -58,7 +50,7 @@ async def list_models(request: Request):
             {
                 "id": model,
                 "object": "model",
-            } for model in request.app.state.models
+            } for model in get_typed_state(request).models
         ]
     }
 
@@ -68,7 +60,8 @@ async def chat_completions(request: Request):
     """
     代理处理 OpenAI 的 chat.completions 请求，支持 stream 和 non-stream 模式。
     """
-    models = request.app.state.models
+    state = get_typed_state(request)
+    models = state.models
     try:
         data = await request.json()
         logger.debug(f"request: {data}")
@@ -81,10 +74,10 @@ async def chat_completions(request: Request):
         raise HTTPException(
             status_code=400, detail=f"Unknown Model {model_id}")
 
-    model: ChatCompletion = models[model_id]
+    model: LLMApi = models[model_id]
 
     response = await model.make_request(data)
-    return await model.handle_response(response, request.app.state)
+    return await model.handle_response(response, state)
 
 # 启动服务
 if __name__ == "__main__":
